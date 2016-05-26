@@ -1,0 +1,930 @@
+#include "MotionPlanner.hpp"
+#include "Graphics.hpp"
+#include <math.h>
+#include <list>
+#include <algorithm>
+#include <map>
+#include <iostream>
+
+using namespace std;
+
+MotionPlanner::MotionPlanner(Simulator * const simulator)
+{
+    m_simulator = simulator;
+	
+    //initialize your data structures/variables here
+    
+    //vishwa's initializations
+    num_vertices = 0;
+    num_edges = 0;
+    current_point_path = 0;
+    ispotential = 0;
+    iter_path = 0;
+    iterator_path = 0;
+    for(int taker = 0; taker < 600; taker++)
+	    vertices2[taker] = 1000;
+
+    //--------------------
+    prm_nr_vertices = 200;
+    prm_nr_neighbours = 18;
+    prm_edges.resize(prm_nr_vertices);
+
+    prm_sampled = false;
+    prm_connected = false;
+
+    prm_nr_neighbours_query = 9;
+    prm_found_near_robot = false;
+    //prm_found_near_rewards.assign(m_simulator->GetNrRewardRegions(), false);
+    //prm_near_rewards.resize(m_simulator->GetNrRewardRegions());
+
+    prm_path_found = false;
+    prm_path_steps = 10;
+}
+
+MotionPlanner::~MotionPlanner(void)
+{
+}
+
+void MotionPlanner::Solve(const double tmax)
+{   
+    //vishwa's code
+    double robot_x,robot_y;//stores the value of robot configuration
+
+
+
+
+    robot_x = m_simulator->GetRobotCenterX();//get the value of robot position
+    robot_y = m_simulator->GetRobotCenterY();
+    double start_config_x = robot_x;
+    double start_config_y = robot_y;
+    int i;
+    double current_x,current_y;
+    current_x = robot_x;
+    current_y = robot_y;
+
+    //Roadmap construction
+    const double *bound_min = m_simulator->GetBoundingBoxMin();//get the boundaries of bounding box
+    const double *bound_max = m_simulator->GetBoundingBoxMax();
+    double bound_max_x = bound_max[0];
+    double bound_max_y = bound_max[1];
+    double bound_min_x = bound_min[0];
+    double bound_min_y = bound_min[1];
+    //int num_vertices=0;
+    //int num_edges = 0;
+    //double max_vertices = (bound_max_x - bound_min_x)*(bound_max_y-bound_min_y)/2;
+    //printf("%f,%f,%f,%f,%f",max_vertices,bound_max[1],bound_min[1],bound_max[0],bound_min[0]);
+    int num_trials=0;//number of max. trials we want to run this for
+    while(num_trials<1000 && num_vertices < 500)
+    {
+	    int done = 0;
+
+	
+		    double new_config[2];//will store the new robot configuration
+		    new_config[0] = PseudoRandomUniformReal(bound_min_x,bound_max_x);
+		    new_config[1] = PseudoRandomUniformReal(bound_min_y,bound_max_y);
+            int num_obstacles = m_simulator->GetNrStaticObstacles();//get all the obstacle
+		    int iter_obs;//iterator will go through all the obstacles 
+		    for(iter_obs=0;iter_obs<num_obstacles;iter_obs++)
+		    {
+			const int     nv   = m_simulator->GetObstacleNrVertices(iter_obs);
+		        const double *poly = m_simulator->GetObstacleVertices(iter_obs);
+			if(!IsPointInsidePolygon(new_config,nv,poly))
+			{
+			
+			    done = 1;
+			}
+			else
+			{
+			    done = 0;
+			    break;
+		        }
+			    
+			if(done==0)
+			    break;
+		    }
+		    if(done==1)
+		    {
+			vertices[num_vertices][0] = new_config[0];
+                        vertices[num_vertices][1] = new_config[1];
+			num_vertices++;//will store the total number of vertices we have
+       			done=1;
+		    }
+				
+    num_trials++;
+    }
+    int first_reward_point  = num_vertices;//index on the vertices where first reward point position will be stored
+    
+    int reward_iterator = 0;
+    vertices[num_vertices][0] = m_simulator->GetGoalCenterX();
+    vertices[num_vertices][1] = m_simulator->GetGoalCenterY();
+    num_vertices++;
+    
+    vertices[num_vertices][0] = robot_x;//put the initial robot position on the array as well
+    vertices[num_vertices][1] = robot_y;
+    num_vertices++; 
+    //form edges
+    int iter_vertices=0;
+    int best_vertices[100];
+    double best_distance[100];
+    int num_best_matches = 100;
+    for (iter_vertices=0;iter_vertices<num_vertices;iter_vertices++)
+    {
+	    int iter_best=0;
+	    for (iter_best=0; iter_best<num_best_matches;iter_best++)//initialize the best_vertices
+	    {
+		    best_vertices[iter_best] = 1000;
+    
+		    best_distance[iter_best] = 1000;
+	    }
+	    for (iter_best=0;iter_best<num_vertices;iter_best++)
+	    {
+		    if(iter_best==iter_vertices)
+			    continue;
+		    double dist_current = sqrt(pow((vertices[iter_vertices][0] - vertices[iter_best][0]),2)+pow((vertices[iter_vertices][1] - vertices[iter_best][1]),2));
+		    //if(dist_current<1)
+		    //	continue;
+		    int which_to_replace=num_best_matches;
+		    int to_replace = 0;
+		    int new_iter = 0;
+		    for(new_iter = 0;new_iter<num_best_matches;new_iter++)
+		    {
+			    if(dist_current < best_distance[new_iter])
+			    {
+				    break;
+				    to_replace= 1;
+			    }
+		    }
+		    which_to_replace = new_iter;
+		
+		    if(which_to_replace>num_best_matches-1)
+			    continue;
+		    else
+		    {
+			    for (new_iter = num_best_matches-1 ; new_iter>which_to_replace;new_iter--)
+			    {
+				    best_distance[new_iter] = best_distance[new_iter-1];
+				    best_vertices[new_iter] = best_vertices[new_iter-1];
+
+				
+			    }
+			    best_distance[which_to_replace] = dist_current;
+			    best_vertices[which_to_replace] = iter_best;
+
+		    }
+
+	    }
+
+	    for(iter_best=0;iter_best<num_best_matches;iter_best++)
+	    {
+		    int num_obstacles = m_simulator->GetNrStaticObstacles();
+		    int iter_obs;
+		    int collision = 0;
+		    for(iter_obs=0;iter_obs<num_obstacles;iter_obs++)
+		    {
+				    int num_obs_v = m_simulator->GetObstacleNrVertices(iter_obs);
+				    const double *obs_vertices = m_simulator->GetObstacleVertices(iter_obs);
+				    int array_sub;
+				    array_sub = best_vertices[iter_best];
+
+				
+				    if(SegmentPolygonIntersection(vertices[iter_vertices],vertices[array_sub],num_obs_v,obs_vertices))
+					collision = 1;
+				    /*for(int k = 1 ; k <= 100 ; k++)
+				    {
+					double x_vert = vertices[iter_vertices][0] + (vertices[array_sub][0] - vertices[iter_vertices][0])*k/100;
+					double y_vert = vertices[iter_vertices][1] + (vertices[array_sub][1] - vertices[iter_vertices][1])*k/100;
+					if (CirclePolygonIntersection(x_vert, y_vert, m_simulator->GetRobotRadius(), num_obs_v, obs_vertices))
+						collision = 1;
+				    }*/	    
+		    }
+		    if(collision==0)
+		    {
+			    int iter_edges;
+			    int match_found = 0;
+			    for(iter_edges = 0;iter_edges<num_edges;iter_edges++)
+			    {
+				    if(edges[iter_edges][0] == best_vertices[iter_best] && edges[iter_edges][1] == iter_vertices)
+				    {
+					    match_found = 1;
+						    break;
+				    }
+				    else if(edges[iter_edges][1] == best_vertices[iter_best] && edges[iter_edges][0] == iter_vertices)
+				    {
+					    match_found = 1;
+						    break;
+				    }
+			    }
+			    if(match_found == 0)
+			    {
+				    edges[num_edges][0] = iter_vertices;
+				    //edges[num_edges][1] = vertices[iter_vertices][1];
+				    edges[num_edges][1] = best_vertices[iter_best];
+				    //edges[num_edges][3] = best_vertices[iter_best][1];
+				    num_edges++;
+			    }
+		    }
+	    }
+    }
+
+    //Djiksta's algorithm for calculation of shortest paths
+    //putter will maintain the index for putting the vertices into the queue
+    // and taker will maintain the index of positions to take the vertices out of the queue.
+    for (reward_iterator = 0; reward_iterator<1/*num_reward_regions*/;reward_iterator++)//to run it for all the goals
+    {
+    int putter = 1;
+    int taker = 0;
+    int current_vertex_point[600];//index of the current vertex being used
+    current_vertex_point[0] = first_reward_point+reward_iterator;
+    //int vertices2[600];//will maintain the weights of all the edges
+
+    taker = 0;
+    vertices2[current_vertex_point[0]] = 0;
+    double vertices1[600][2];//queue
+    vertices1[0][0] = vertices[current_vertex_point[0]][0];
+    vertices1[0][1] = vertices[current_vertex_point[0]][1];
+    int current_reward= 0;
+    int over = 0;
+    num_trials = 0;
+    while(over==0 )
+    {
+	    double current_vertex[2];
+	    current_vertex[0] = vertices1[taker][0];
+	    current_vertex[1] = vertices1[taker][1];
+	    //get neighbours
+	    int iter_edges;
+	    for(iter_edges=0;iter_edges<num_edges;iter_edges++)
+	    {
+		    if(edges[iter_edges][0] == current_vertex_point[taker])
+		    {
+			    int i;
+			    int put = 1;
+			    if(vertices2[edges[iter_edges][1]]>(vertices2[current_vertex_point[taker]]+1))
+			    {
+				    vertices1[putter][0] = vertices[edges[iter_edges][1]][0];
+				    vertices1[putter][1] = vertices[edges[iter_edges][1]][1];		
+				    current_vertex_point[putter] = edges[iter_edges][1];
+				    vertices2[edges[iter_edges][1]] = vertices2[current_vertex_point[taker]]+1;
+				    putter++;
+			    }
+
+
+		    }
+		    else if(edges[iter_edges][1] == current_vertex_point[taker])
+		    {
+			    int i; int put=1;
+			    if(vertices2[edges[iter_edges][0]]>(vertices2[current_vertex_point[taker]]+1))
+			    {
+				    vertices1[putter][0] = vertices[edges[iter_edges][0]][0];
+				    vertices1[putter][1] = vertices[edges[iter_edges][0]][1];		
+				    current_vertex_point[putter] = edges[iter_edges][0];
+				    vertices2[edges[iter_edges][0]] = vertices2[current_vertex_point[taker]]+1;
+				    putter++;
+				
+			    }
+		    }
+
+		    int i;
+	    }
+	    taker++; 
+
+	    if(taker>=putter)
+		    over = 1;
+	    num_trials++;
+    }
+
+    }
+//Anand
+    /*ResetPRM();
+    double bBoxMaxX = m_simulator->GetBoundingBoxMax()[0];
+    double bBoxMaxY = m_simulator->GetBoundingBoxMax()[1];
+    double bBoxMinX = m_simulator->GetBoundingBoxMin()[0];
+    double bBoxMinY = m_simulator->GetBoundingBoxMin()[1];
+
+    double robLength = m_simulator->GetRobotLength();
+    double robWidth = m_simulator->GetRobotWidth();
+
+    int nObstacles = m_simulator->GetNrObstacles();
+    int nRewards = m_simulator->GetNrRewardRegions();
+
+    // loop until a set number of sample points are generated
+    int b = 0;
+    while(b < prm_nr_vertices){
+        double randX = PseudoRandomUniformReal(bBoxMinX, bBoxMaxX); // random x coordinate
+        double randY = PseudoRandomUniformReal(bBoxMinY, bBoxMaxY); // random y coordinate
+        double randTheta = PseudoRandomUniformReal(0, 2*M_PI); // random theta value
+        double randVertices[8];
+        // construct the 4 corners (vertices) of the robot at the random configuration
+        Robot robot = CreateVirtualRobot(randX, randY, randTheta);
+        bool collisionFree = true;
+
+        // check if this configuration is in collision with any of the obstacles
+        for (int i = 0; i < nObstacles; i++){
+            // check for the 4 vertices of the robot
+            for (list<double*>::iterator iter = robot.vertices.begin(); iter != robot.vertices.end(); iter++){
+                if (IsPointInsidePolygon(*iter, m_simulator->GetObstacleNrVertices(i), m_simulator->GetObstacleVertices(i))){
+                    collisionFree = false;
+                    break;
+                }
+            }
+            // check for body diagonals
+            if (SegmentPolygonIntersection(robot.p0, robot.p2, m_simulator->GetObstacleNrVertices(i), m_simulator->GetObstacleVertices(i))){
+                collisionFree = false;
+            }
+            if (SegmentPolygonIntersection(robot.p1, robot.p3, m_simulator->GetObstacleNrVertices(i), m_simulator->GetObstacleVertices(i))){
+                collisionFree = false;
+            }
+            if (!collisionFree) break;
+        }
+        if (collisionFree){
+            prm_vertices.push_back(randX);
+            prm_vertices.push_back(randY);
+            prm_vertices.push_back(randTheta);
+            b++;
+            cerr << "Samples found : " << b << "\r";
+        }
+    }
+    cerr << endl;
+    prm_sampled = true;
+
+    // creating the edges for the PRM
+    for (int i = 0; i < prm_nr_vertices; i++){
+        GetNeighboursByDirectInterpolation(prm_nr_neighbours, i, prm_vertices, prm_edges[i]);
+    }
+    prm_connected = true;
+
+    //********** PRM constructed ***********
+    
+    // find nearest neighbour for robot on PRM
+    prm_near_robot = GetNearestNeighbourByDirectInterpolation(prm_nr_neighbours_query, m_simulator->GetRobotCenterX(),
+                          m_simulator->GetRobotCenterY(), prm_vertices);
+    if (prm_near_robot == -1){
+        cerr << "No points found on PRM close to the robot. Resample. \n" << endl;
+        return;
+    }
+    else prm_found_near_robot = true;   
+    
+    // find nearest neighbour for goals on PRM
+    for (int i = 0; i < nRewards; i++){
+        prm_near_rewards[i] = GetNearestNeighbourByDirectInterpolation(prm_nr_neighbours_query, m_simulator->GetRewardRegionCenterX(i),
+                                m_simulator->GetRewardRegionCenterY(i), prm_vertices);
+        if (prm_near_rewards[i] != -1){
+            prm_found_near_rewards[i] = true;
+        }
+    }
+    prm_near_rewards.resize(nRewards);
+    
+    // adding the robot and goals to the PRM list of vertices.
+    prm_vertices.push_back(m_simulator->GetRobotCenterX());
+    prm_vertices.push_back(m_simulator->GetRobotCenterY());
+    prm_vertices.push_back(m_simulator->GetRobotAngleInRadians());
+    for (int i = 0; i < prm_near_rewards.size(); i++){
+        prm_vertices.push_back(m_simulator->GetRewardRegionCenterX(i));
+        prm_vertices.push_back(m_simulator->GetRewardRegionCenterY(i));
+        prm_vertices.push_back(-1);
+    }
+    prm_nr_vertices = prm_vertices.size()/3;
+
+    // adding edges connecting robot and rewards to the nearest found points on the PRM.
+    int rob_index = prm_nr_vertices - nRewards - 1;
+    std::vector<int> reward_index;
+    reward_index.resize(nRewards);
+    for (int i = 0; i < nRewards; i++){
+        reward_index[i] = rob_index + i + 1;
+    }
+
+    std::list<int> edges;
+    edges.push_back(prm_near_robot);
+    prm_edges.push_back(edges);
+    prm_edges[prm_near_robot].push_back(rob_index);
+
+    for (int i = 0; i < prm_near_rewards.size(); i++){
+        std::list<int> edges;
+        edges.push_back(prm_near_rewards[i]);
+        prm_edges.push_back(edges);
+        prm_edges[prm_near_rewards[i]].push_back(reward_index[i]);
+    }
+
+    // create graph for final path planning.
+    std::vector<int> targets;
+    targets.push_back(rob_index);
+    for (int i = 0; i < nRewards; i++){
+        targets.push_back(reward_index[i]);
+    }
+
+    // find shortest paths on PRM for all combinations of the targets
+    for (int i = 0; i < targets.size(); i++){
+        for (int j = 0; j < targets.size(); j++){
+
+        }
+    }
+    
+    int source, destination;
+    std::list<int> path;
+    int k = 0;
+    source = targets[k];
+    while (path.empty() && k < nRewards){
+        destination = targets[k+1];
+        path = GetShortestPathByDijkstra(source, destination);
+        if (!path.empty()){
+            prm_path.insert(prm_path.end(), path.begin(), path.end());
+            path.clear();
+            source = targets[k+1];
+        }
+        k++;
+    }
+
+    if (prm_path.empty()){
+        cerr << "No path can be found. Re-run the planner.\n" << endl;
+        return;
+    }
+    else {
+        prm_path_found = true;
+    }*/
+
+
+/*
+ * you can use the functionality provided in Utils.hpp to measure
+ * running time, e.g.,
+ *  Clock clk;
+ *  ClockStart(&clk);
+ *  while(ClockElapsed(&clk) < tmax)
+ *  {
+ *  }
+ * If your algorithm obtains a solution earlier than the maximum time,
+ * then you can break out of the while loop (using return or break statement)
+ */   
+current_point_path = num_vertices - 1;
+}
+
+void MotionPlanner::GetHighestRewardCollisionFreePath(std::vector<double> * path)
+{
+
+/*
+ * CS336: since there is only one goal region in your case, this function needs to simply 
+ *        get the path to the goal region with index 0
+ */
+
+/*
+ * CS436: since you are dealing with multiple goal, you should try to get the path
+ *        with the highest accumulated reward
+ */
+    double prevX, prevY, prevTheta;
+    double currX, currY, currTheta;
+    for (std::list<int>::iterator iter = prm_path.begin(); iter != prm_path.end(); iter++){
+        
+        currX = prm_vertices[3*(*iter)];
+        currY = prm_vertices[3*(*iter) + 1];
+        currTheta = prm_vertices[3*(*iter) + 2];
+        
+        if (iter == prm_path.begin()){
+            prevX = currX; prevY = currY; prevTheta = currTheta;
+        }
+
+        int k = 0;
+        while (k < prm_path_steps){
+            path->push_back(prevTheta + (currTheta - prevTheta) * k/10);
+            path->push_back(prevX + (currX - prevX) * k/10);
+            path->push_back(prevY + (currY - prevY) * k/10);
+            k++;
+        }
+
+        prevX = currX; prevY = currY; prevTheta = currTheta;
+    }
+
+}
+
+//vishwa
+void MotionPlanner::moveRobot(void)
+{
+    int current_point = current_point_path;
+   // printf("%d\n",num_vertices);
+int done =0;
+int iterator = iterator_path;
+//int ispotential = 0;
+double robot_x=0;
+double robot_y=0;
+int notpotential = 1;
+double dist_min = 100000;
+	if(ispotential==0 && num_vertices > 10)
+	{
+		iterator ++;
+		int i;
+		int min_vert = 1000;
+		int min_val = 10000;
+		for(i=0;i<num_edges;i++)
+		{
+			if(edges[i][0]==current_point)
+			{
+ 		            
+				if(vertices2[edges[i][1]]<min_val)
+				{
+				
+				
+					min_vert = edges[i][1];
+					min_val = vertices2[edges[i][1]];
+				
+				}
+			}
+			else if(edges[i][1] == current_point)
+			{
+			
+				if(vertices2[edges[i][0]]<min_val)
+				{
+				
+						min_vert = edges[i][0];
+						min_val = vertices2[edges[i][0]];
+				
+				}
+
+			}
+		}
+		double x1 = vertices[current_point][0] + (vertices[min_vert][0]-vertices[current_point][0])*iterator/100;
+		double y1 = vertices[current_point][1] + (vertices[min_vert][1]-vertices[current_point][1])*iterator/100;
+        m_simulator->SetRobotPosition(x1,y1);
+ 
+		if(iterator == 100)
+		{	
+			current_point = min_vert;
+			iterator = 0;
+
+		}
+		//printf("%d\n",current_point);
+
+		//m_simulator->SetRobotOrientationAndPosition(0,x1,y1);
+		//DrawColor(255,255,0);
+		//DrawPoint2D(vertices[current_point][0],vertices[current_point][1]);
+		if(min_val == 0 && current_point == min_vert)
+			done =1;
+		
+		
+		
+		
+		robot_x = x1;
+		robot_y = y1;
+
+        	double theta;
+		double x_hit, y_hit;
+		int moving;
+		for(theta=0;theta<=360;theta = theta +3)
+		{
+			double theta1 = theta * 3.14/180;
+			m_simulator->TakeStaticLaserReading(theta1,x_hit,y_hit,moving);
+			if(moving==1)
+			{
+				
+				ispotential = 1;
+			}
+		}
+
+	}
+	else if(ispotential == 1 && notpotential == 1)
+	{
+		double theta;
+		double x_hit, y_hit;
+		int moving;
+		robot_x = m_simulator->GetRobotCenterX();
+		robot_y = m_simulator->GetRobotCenterY();
+		double grad_u_rep_final_x=0;
+		double grad_u_rep_final_y=0;
+		for(theta = 0;theta<=360;theta = theta+3)		
+		{
+			double theta1 = theta * 3.14/180;
+			m_simulator->TakeStaticLaserReading(theta1,x_hit,y_hit,moving);
+			double grad_u_rep_x = 0;
+			double grad_u_rep_y = 0;
+			double threshold_Q = 3.5;
+			double dx=0,dy=0;
+			double moving_obstacle_x = x_hit;
+			double moving_obstacle_y = y_hit;
+			double dist_ob = sqrt(pow((robot_x - moving_obstacle_x),2)+pow((robot_y - moving_obstacle_y),2));
+			double gradient_ob = (robot_y - moving_obstacle_y)/(robot_x - moving_obstacle_x);
+			 if(robot_x < moving_obstacle_x)
+                        {
+                                dx = .1;
+                        }
+                        else
+                        {
+                                dx = -.1;
+                        }
+			                        dy = dx*gradient_ob;
+//check if the gradient_ob is not very large, if so, decrease its value
+                        if(gradient_ob>3 || gradient_ob<-3)
+                        {
+                                dx = 0;
+                                if(robot_y>moving_obstacle_y)
+                                {
+                                        dy = -.1;
+                                }
+                                else
+                                {
+                                        dy = .1;
+                                }
+                        }
+//check if dist_ob is less than threshold_Q 
+                        if(dist_ob >= threshold_Q)
+                        {
+                                grad_u_rep_x = 0;
+                                grad_u_rep_y = 0;
+                        }
+//calculate the repulsive potentials
+                        else
+                        {
+                                grad_u_rep_x =(((1/threshold_Q)-(1/dist_ob))*(1/(dist_ob*dist_ob)))*dx;
+                                grad_u_rep_y =(((1/threshold_Q)-(1/dist_ob))*(1/(dist_ob*dist_ob)))*dy;
+			}
+			//printf("%f,%f,%f\n",grad_u_rep_x,grad_u_rep_y,dist_ob);
+			grad_u_rep_final_x = grad_u_rep_final_x + grad_u_rep_x;
+			grad_u_rep_final_y = grad_u_rep_final_y + grad_u_rep_y;
+			//path->push_back(0);path->push_back(robot_x);path->push_back(robot_y);
+			
+		}
+		if(grad_u_rep_final_x>2)
+			grad_u_rep_final_x = 2;
+		if(grad_u_rep_final_y>2)
+			grad_u_rep_final_y = 2;
+		if(grad_u_rep_final_x<-2)
+			grad_u_rep_final_x = -2;
+		if(grad_u_rep_final_y<-2)
+			grad_u_rep_final_y = -02;
+		robot_x = robot_x + grad_u_rep_final_x;
+		robot_y = robot_y + grad_u_rep_final_y;
+		m_simulator->SetRobotPosition(robot_x,robot_y);
+		if(moving==0)
+		{
+			ispotential =0;
+		
+			int pot_vert_iter;
+			double robot_pos[2];
+			robot_pos[0] = robot_x;
+			robot_pos[1] = robot_y;
+			for(pot_vert_iter = 0; pot_vert_iter < num_vertices ; pot_vert_iter++)
+			{
+				int iter_obs;
+				int collision = 0;
+				int num_obstacles = m_simulator->GetNrStaticObstacles();
+				for(iter_obs=0;iter_obs<num_obstacles;iter_obs++)
+				{
+						int num_obs_v = m_simulator->GetObstacleNrVertices(iter_obs);
+						const double *obs_vertices = m_simulator->GetObstacleVertices(iter_obs);
+					
+					
+				//		printf("\n\n\n\n\n %f \n\n\n\n",array_sub);
+					
+						if(SegmentPolygonIntersection(robot_pos,vertices[pot_vert_iter],num_obs_v,obs_vertices))
+							collision = 1;
+				}
+				double dist_points = sqrt(pow(vertices[pot_vert_iter][0] - robot_x,2)+pow(vertices[pot_vert_iter][1] - robot_y,2));
+				if(collision==0 && dist_points<dist_min)
+				{
+					dist_min = dist_points;
+					current_point = pot_vert_iter;
+					iterator = 0;
+				
+					
+
+				}
+			}
+			robot_x = vertices[current_point][0];
+			robot_y = vertices[current_point][1];
+			//path->push_back(0);path->push_back(robot_x);path->push_back(robot_y);
+			notpotential = 0;
+			ispotential = 0;
+		}	
+	}
+
+		
+
+//if no moving obstacle in laser range
+	// follow path
+// else
+// use potential function to move until no moving obstacle in laser range/threshold
+//go to nearest point, find path
+/*
+ * CS336: since there is only one goal region in your case, this function needs to simply 
+ *        get the path to the goal region with index 0
+ */
+
+/*
+ * CS436: since you are dealing with multiple goal, you should try to get the path
+ *        with the highest accumulated reward
+ */
+current_point_path = current_point;
+iterator_path = iterator;
+}
+//----------------
+void MotionPlanner::Draw(void)
+{
+    //you can use the draw functions to draw your roadmap or tree
+    //e.g.,
+    // DrawColor(r, g, b)
+    // DrawPoint2D(x, y)
+	//DrawSegment2D(x1,y1,x2,y2);
+    //vishwa's draw functions
+    /*DrawColor(01,01,0);
+    DrawPoint2D(vertices[0][0],vertices[0][1]);
+	int i;
+	for(i=1;i<num_vertices;i++){
+	DrawPoint2D(vertices[i][0],vertices[i][1]);
+	//DrawPoint2D(vertices[2][0],vertices[2][1]);
+	//DrawPoint2D(vertices[3][0],vertices[3][1]);
+//	DrawSegment2D(vertices[i-1][0],vertices[i-1][1],vertices[i][0],vertices[i][1]);
+	}
+	for(i=1;i<num_edges;i++)
+	{
+		DrawSegment2D(vertices[edges[i][0]][0],vertices[edges[i][0]][1],vertices[edges[i][1]][0],vertices[edges[i][1]][1]);
+	}*/
+    //----------------
+    if (prm_sampled){
+        for (int i = 0; i < prm_nr_vertices; i++){
+            DrawColor(1, 0, 0);
+            DrawPoint2D(prm_vertices[3*i], prm_vertices[3*i+1]);
+        }
+    }
+    if (prm_connected){
+        for (int i = 0; i < prm_nr_vertices; i++){
+            DrawColor(0.8, 0.8, 0.8);
+            double x1 = prm_vertices[3*i];
+            double y1 = prm_vertices[3*i + 1];
+            for (list<int>::iterator iter = prm_edges[i].begin(); iter != prm_edges[i].end(); iter++){
+                DrawSegment2D(x1, y1, prm_vertices[3*(*(iter))], prm_vertices[3*(*iter) + 1]);
+            }
+        }
+    }
+    if (prm_found_near_robot){
+        DrawColor(0, 0, 1);
+        DrawPoint2D(prm_vertices[3*prm_near_robot], prm_vertices[3*prm_near_robot + 1]);
+    }
+    for (int i = 0; i < prm_found_near_rewards.size(); i++){
+        if (prm_found_near_rewards[i]){
+        }
+    }
+
+    if (prm_path_found){
+        
+        DrawColor(0.5, 0.5, 1);
+        for (std::list<int>::iterator iter = prm_path.begin(); iter != prm_path.end(); iter++){
+            double p0[2] = {prm_vertices[3*(*iter)], prm_vertices[3*(*iter) + 1]}; 
+            DrawPoint2D(prm_vertices[3*(*iter)], prm_vertices[3*(*iter) + 1]);
+        }
+    }
+}
+
+void MotionPlanner::GetNeighboursByDirectInterpolation(const int num_neighbours, const double x, const double y, const vector<double> points, list<int> &neighbours){
+    double p[2] = {x, y};
+    map<double, int> dist;
+
+    for (int i = 0; i < points.size()/3; i++){
+        dist[EuclideanDistance(x, y, points[3*i], points[3*i + 1])] = i;
+    }
+
+    map<double, int>::iterator iter = dist.begin();
+    for (int k = 0; k < num_neighbours; k++, iter++){
+        if (IsLocalPathSimple(x, y, points[3*iter->second], points[3*iter->second + 1])){
+            neighbours.push_back(iter->second);
+        }
+    }
+}
+
+void MotionPlanner::GetNeighboursByDirectInterpolation(const int num_neighbours, const int index, const vector<double> points, list<int> &neighbours){
+    double x = points[3*index];
+    double y = points[3*index + 1];
+    GetNeighboursByDirectInterpolation(num_neighbours, x, y, points, neighbours);
+}
+
+bool MotionPlanner::IsLocalPathSimple(const double start_x, const double start_y, const double end_x, const double end_y){
+    
+    double q1[2] = {start_x, start_y};
+    double q2[2] = {end_x, end_y};
+
+    for (int i = 0; i < m_simulator->GetNrStaticObstacles(); i++){
+        if (SegmentPolygonIntersection(q1, q2, m_simulator->GetObstacleNrVertices(i), m_simulator->GetObstacleVertices(i))){
+            return false;
+        }
+    }
+    return true;
+}
+
+int MotionPlanner::GetNearestNeighbourByDirectInterpolation(const int num_neighbours, const double x, const double y, const std::vector<double> points){
+    
+    map<double, int> dist;
+
+    for (int i = 0; i < points.size()/3; i++){
+        dist[EuclideanDistance(x, y, points[3*i], points[3*i + 1])] = i;
+    }
+
+    map<double, int>::iterator iter = dist.begin();
+    int k = 0;
+    bool nearest_neighbour_found = false;
+    while(k < num_neighbours){
+        if (IsLocalPathSimple(x, y, points[3*iter->second], points[3*iter->second + 1])){
+            nearest_neighbour_found = true;
+            break;
+        }
+        k++;
+        iter++;
+    }
+    if (nearest_neighbour_found) return iter->second;
+    else return -1;
+}
+
+std::list<int> MotionPlanner::GetShortestPathByDijkstra(const int start, const int destination){
+
+    std::vector<double> weights;
+    weights.assign(prm_nr_vertices, MAXINT);
+
+    std::vector<bool> visited_vertices;
+    visited_vertices.assign(prm_nr_vertices, false);
+
+    std::list<int> unvisited_vertices;
+    for (int i = 0; i < prm_nr_vertices; i++){
+        if (i != start) unvisited_vertices.push_back(i);
+    }
+
+    std::vector<map<int,double> > lengths;
+    lengths.resize(prm_nr_vertices);
+    for (int i = 0; i < prm_nr_vertices; i++){
+        std::list<int>::iterator iter = prm_edges[i].begin();
+        while(iter != prm_edges[i].end()){
+            lengths[i][*iter] = EuclideanDistance(prm_vertices[3*i], prm_vertices[3*i + 1], prm_vertices[3*(*iter)], prm_vertices[3*(*iter) + 1]);
+            iter++;
+        }
+    }
+
+    std::vector<int> parent;
+    parent.resize(prm_nr_vertices);
+    for (int i = 0; i < prm_nr_vertices; i++){
+        parent[i] = MAXINT;
+    }
+
+    int curr_vertex = start;
+    weights[start] = 0;
+
+    while(!unvisited_vertices.empty()){
+        //cerr << curr_vertex << endl;
+        if (curr_vertex == destination){
+            break;
+        }
+        std::list<int>::iterator iter1 = prm_edges[curr_vertex].begin();
+        while(iter1 != prm_edges[curr_vertex].end()){
+            if (!visited_vertices[*iter1]){
+                if (weights[*(iter1)] > weights[curr_vertex] + lengths[curr_vertex][*(iter1)]){
+                    weights[*(iter1)] = weights[curr_vertex] + lengths[curr_vertex][*(iter1)];
+                    parent[*iter1] = curr_vertex;
+                }
+            }
+            iter1++;
+        }
+        
+        visited_vertices[curr_vertex] = true;
+
+        double min_weight = MAXINT;
+        int min_weight_index = -1;
+
+        for (std::list<int>::iterator iter2 = unvisited_vertices.begin(); iter2 != unvisited_vertices.end(); iter2++){
+            if (*iter2 == curr_vertex){
+                iter2 = unvisited_vertices.erase(iter2);
+            }
+            if (iter2 == unvisited_vertices.end()) break;
+            if (weights[*iter2] < min_weight){
+                min_weight = weights[*iter2];
+                min_weight_index = *iter2;
+            }
+        }
+
+        curr_vertex = min_weight_index;
+        if (curr_vertex == destination){
+            break;
+        }
+    }
+
+    std::list<int> path;
+    int x = destination;
+    while(parent[x] != MAXINT){
+        path.push_front(x);
+        x = parent[x];
+    }
+    path.push_front(start);
+
+    return path;
+}
+
+void MotionPlanner::ResetPRM(){
+    
+    prm_vertices.clear();
+
+    prm_edges.clear();
+    prm_edges.resize(prm_nr_vertices);
+
+    prm_sampled = false;
+    prm_connected = false;
+
+    prm_near_robot = -1;
+    prm_found_near_robot = false;
+    prm_found_near_rewards.clear();
+    //prm_found_near_rewards.assign(m_simulator->GetNrRewardRegions(), false);
+    prm_near_rewards.clear();
+    //prm_near_rewards.resize(m_simulator->GetNrRewardRegions());
+
+    prm_path_found = false;
+    prm_path.clear();
+}
